@@ -23,6 +23,7 @@ from llama_index.core import (
     Settings,
 )
 from llama_index.llms.openai import OpenAI
+from llama_index.llms.openrouter import OpenRouter
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.chat_engine import SimpleChatEngine
@@ -60,6 +61,10 @@ app.add_middleware(
 DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "./storage"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openrouter")  # "openai" or "openrouter"
+USE_LLAMA_PARSE = os.getenv("USE_LLAMA_PARSE", "false").lower() == "true"
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
 # Ensure directories exist
@@ -124,19 +129,40 @@ class ParsePDFResponse(BaseModel):
 def configure_llm_and_embeddings():
     """Configure LLM and embedding models"""
     try:
-        # Configure LLM
-        Settings.llm = OpenAI(
-            model=os.getenv("LLM_MODEL", "gpt-4"),
-            api_key=OPENAI_API_KEY,
-            temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
-            max_tokens=int(os.getenv("LLM_MAX_TOKENS", "512"))
-        )
+        # Configure LLM based on provider
+        if LLM_PROVIDER == "openrouter":
+            if not OPENROUTER_API_KEY:
+                raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter")
 
-        # Configure embeddings
-        Settings.embed_model = OpenAIEmbedding(
-            model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
-            api_key=OPENAI_API_KEY
-        )
+            Settings.llm = OpenRouter(
+                model=os.getenv("LLM_MODEL", "openai/gpt-4-turbo"),
+                api_key=OPENROUTER_API_KEY,
+                temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
+                max_tokens=int(os.getenv("LLM_MAX_TOKENS", "512"))
+            )
+            logger.info(f"Using OpenRouter with model: {os.getenv('LLM_MODEL', 'openai/gpt-4-turbo')}")
+        else:
+            if not OPENAI_API_KEY:
+                raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+
+            Settings.llm = OpenAI(
+                model=os.getenv("LLM_MODEL", "gpt-4"),
+                api_key=OPENAI_API_KEY,
+                temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
+                max_tokens=int(os.getenv("LLM_MAX_TOKENS", "512"))
+            )
+            logger.info(f"Using OpenAI with model: {os.getenv('LLM_MODEL', 'gpt-4')}")
+
+        # Configure embeddings (still uses OpenAI for embeddings)
+        # Note: OpenRouter also supports embeddings, but OpenAI embeddings are excellent
+        if not OPENAI_API_KEY and LLM_PROVIDER == "openrouter":
+            logger.warning("OPENAI_API_KEY not set. You may need to configure alternative embeddings.")
+        else:
+            Settings.embed_model = OpenAIEmbedding(
+                model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
+                api_key=OPENAI_API_KEY
+            )
+            logger.info(f"Using OpenAI embeddings: {os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')}")
 
         # Configure node parser
         Settings.node_parser = SentenceSplitter(
