@@ -102,6 +102,24 @@ class HealthResponse(BaseModel):
     environment: str
     index_loaded: bool
 
+class ParsePDFRequest(BaseModel):
+    parsing_instruction: Optional[str] = Field(
+        None,
+        description="Custom instructions for parsing (e.g., 'Extract all tables')"
+    )
+    use_llamaparse: Optional[bool] = Field(
+        True,
+        description="Use LlamaParse (LLM-powered) or simple parser"
+    )
+
+class ParsePDFResponse(BaseModel):
+    status: str
+    filename: str
+    num_pages: int
+    content: List[str]
+    metadata: Optional[List[Dict[str, Any]]] = None
+    parser_used: str
+
 
 def configure_llm_and_embeddings():
     """Configure LLM and embedding models"""
@@ -515,6 +533,102 @@ async def upload_file(file: UploadFile = File(...)):
 
     except Exception as e:
         logger.error(f"Error uploading file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/parse-pdf", response_model=ParsePDFResponse)
+async def parse_pdf(
+    file: UploadFile = File(...),
+    parsing_instruction: Optional[str] = None,
+    use_llamaparse: bool = True
+):
+    """
+    Parse PDF with optional LLM-powered parsing
+
+    Uses LlamaParse for better table/form extraction, or simple parser for basic PDFs.
+    LlamaParse requires LLAMA_CLOUD_API_KEY environment variable.
+    """
+    import tempfile
+
+    # Validate it's a PDF
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are supported"
+        )
+
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_path = temp_file.name
+
+        documents = None
+        parser_used = "unknown"
+
+        # Try LlamaParse if requested
+        if use_llamaparse:
+            llama_cloud_key = os.getenv("LLAMA_CLOUD_API_KEY")
+
+            if not llama_cloud_key:
+                logger.warning("LLAMA_CLOUD_API_KEY not set, falling back to simple parser")
+                use_llamaparse = False
+            else:
+                try:
+                    from llama_parse import LlamaParse
+
+                    logger.info(f"Parsing PDF with LlamaParse: {file.filename}")
+
+                    parser = LlamaParse(
+                        api_key=llama_cloud_key,
+                        result_type="markdown",
+                        parsing_instruction=parsing_instruction or "Extract all content accurately, preserving tables and structure.",
+                        verbose=True
+                    )
+
+                    documents = parser.load_data(temp_path)
+                    parser_used = "llamaparse"
+                    logger.info(f"LlamaParse completed: {len(documents)} pages")
+
+                except ImportError:
+                    logger.warning("llama-parse not installed, falling back to simple parser")
+                    use_llamaparse = False
+                except Exception as e:
+                    logger.error(f"LlamaParse error: {e}, falling back to simple parser")
+                    use_llamaparse = False
+
+        # Fall back to simple parser if LlamaParse not available/failed
+        if not use_llamaparse or documents is None:
+            logger.info(f"Parsing PDF with SimpleDirectoryReader: {file.filename}")
+
+            documents = SimpleDirectoryReader(
+                input_files=[temp_path]
+            ).load_data()
+            parser_used = "simple"
+            logger.info(f"Simple parser completed: {len(documents)} pages")
+
+        # Clean up temp file
+        os.unlink(temp_path)
+
+        # Extract content and metadata
+        content = [doc.text for doc in documents]
+        metadata = [doc.metadata for doc in documents]
+
+        return ParsePDFResponse(
+            status="success",
+            filename=file.filename,
+            num_pages=len(documents),
+            content=content,
+            metadata=metadata,
+            parser_used=parser_used
+        )
+
+    except Exception as e:
+        logger.error(f"Error parsing PDF: {e}")
+        # Clean up temp file if it exists
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.unlink(temp_path)
         raise HTTPException(status_code=500, detail=str(e))
 
 
