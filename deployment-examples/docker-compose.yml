@@ -79,7 +79,7 @@ services:
     container_name: llamaindex-postgres
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       - POSTGRES_USER=${DB_USER:-llamaindex}
       - POSTGRES_PASSWORD=${DB_PASSWORD:-llamaindex_password}
